@@ -28,7 +28,8 @@ import {
   LogOut,
   Plus,
   Trash2,
-  Grid3x3
+  Grid3x3,
+  X
 } from 'lucide-react'
 import toast, { Toaster } from 'react-hot-toast'
 
@@ -150,8 +151,8 @@ function App() {
       if (!user?.id) return
       
       const avatars = await blink.db.avatars.list({
-        where: { userId: user.id },
-        orderBy: { createdAt: 'desc' },
+        where: { user_id: user.id },
+        orderBy: { created_at: 'desc' },
         limit: 10
       })
 
@@ -159,8 +160,8 @@ function App() {
         id: avatar.id,
         name: avatar.name,
         settings: JSON.parse(avatar.settings),
-        thumbnailUrl: avatar.thumbnailUrl || undefined,
-        createdAt: avatar.createdAt
+        thumbnailUrl: avatar.thumbnail_url || undefined,
+        createdAt: avatar.created_at
       }))
       
       setSavedAvatars(parsedAvatars)
@@ -179,10 +180,10 @@ function App() {
     try {
       const avatarData = {
         id: currentAvatarId || `avatar_${Date.now()}`,
-        userId: user.id,
+        user_id: user.id,
         name: avatarName.trim(),
         settings: JSON.stringify(avatarSettings),
-        thumbnailUrl: null // We could generate a thumbnail here
+        thumbnail_url: null // We could generate a thumbnail here
       }
 
       if (currentAvatarId) {

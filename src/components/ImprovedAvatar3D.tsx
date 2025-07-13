@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, Suspense } from 'react'
+import React, { useRef, useState, useEffect, Suspense } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, Environment, ContactShadows, Text, useGLTF } from '@react-three/drei'
 import { Mesh, Group, DirectionalLight, AmbientLight } from 'three'
@@ -399,28 +399,6 @@ function RealisticAvatarMesh({ settings, lighting }: ImprovedAvatar3DProps) {
   )
 }
 
-// Error boundary component
-function Avatar3DErrorBoundary({ children, fallback }: { children: React.ReactNode, fallback: React.ReactNode }) {
-  const [hasError, setHasError] = useState(false)
-
-  useEffect(() => {
-    const handleError = (error: ErrorEvent) => {
-      if (error.message?.includes('WebGL') || error.message?.includes('Context Lost')) {
-        setHasError(true)
-      }
-    }
-
-    window.addEventListener('error', handleError)
-    return () => window.removeEventListener('error', handleError)
-  }, [])
-
-  if (hasError) {
-    return <>{fallback}</>
-  }
-
-  return <>{children}</>
-}
-
 // 2D Fallback component
 function Avatar2DFallback({ settings }: { settings: ImprovedAvatar3DProps['settings'] }) {
   const heightScale = settings.height / 180
@@ -517,20 +495,81 @@ function Avatar2DFallback({ settings }: { settings: ImprovedAvatar3DProps['setti
   )
 }
 
+// Error boundary component with better error detection
+class Avatar3DErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallback: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: any) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error('3D Avatar Error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback
+    }
+
+    return this.props.children
+  }
+}
+
 export default function ImprovedAvatar3D({ settings, lighting, customModelUrl }: ImprovedAvatar3DProps) {
   const [webglSupported, setWebglSupported] = useState(true)
   const [renderError, setRenderError] = useState<string | null>(null)
+  const [contextLost, setContextLost] = useState(false)
 
   useEffect(() => {
-    // Check WebGL support
+    // Check WebGL support more thoroughly
     try {
       const canvas = document.createElement('canvas')
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
+      
       if (!gl) {
         setWebglSupported(false)
         setRenderError('WebGL not supported on this device')
+        return
+      }
+
+      // Test basic WebGL functionality
+      const program = gl.createProgram()
+      if (!program) {
+        setWebglSupported(false)
+        setRenderError('WebGL context creation failed')
+        return
+      }
+
+      // Listen for context lost events
+      const handleContextLost = (event: Event) => {
+        event.preventDefault()
+        console.warn('WebGL context lost')
+        setContextLost(true)
+        setRenderError('3D rendering context lost - using 2D fallback')
+      }
+
+      const handleContextRestored = () => {
+        console.log('WebGL context restored')
+        setContextLost(false)
+        setRenderError(null)
+      }
+
+      canvas.addEventListener('webglcontextlost', handleContextLost)
+      canvas.addEventListener('webglcontextrestored', handleContextRestored)
+
+      return () => {
+        canvas.removeEventListener('webglcontextlost', handleContextLost)
+        canvas.removeEventListener('webglcontextrestored', handleContextRestored)
       }
     } catch (e) {
+      console.error('WebGL check failed:', e)
       setWebglSupported(false)
       setRenderError('3D rendering not available')
     }
@@ -542,94 +581,107 @@ export default function ImprovedAvatar3D({ settings, lighting, customModelUrl }:
     setWebglSupported(false)
   }
 
-  if (!webglSupported || renderError) {
+  // Always show 2D fallback if there are any issues
+  if (!webglSupported || renderError || contextLost) {
     return <Avatar2DFallback settings={settings} />
   }
 
   return (
     <div className="w-full h-full">
       <Avatar3DErrorBoundary fallback={<Avatar2DFallback settings={settings} />}>
-        <Canvas
-          shadows
-          camera={{ position: [0, 1.5, 3], fov: 50 }}
-          className="bg-gradient-to-b from-slate-800 to-slate-900"
-          onCreated={({ gl }) => {
-            try {
-              gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-              gl.shadowMap.enabled = true
-              gl.shadowMap.type = THREE.PCFSoftShadowMap
-            } catch (error) {
-              handleCanvasError(error)
-            }
-          }}
-          onError={handleCanvasError}
-        >
-          {/* Enhanced lighting setup */}
-          <ambientLight intensity={lighting.ambientIntensity} />
-          <directionalLight
-            position={lighting.directionalPosition}
-            intensity={lighting.directionalIntensity}
-            castShadow={lighting.shadows}
-            shadow-mapSize-width={2048}
-            shadow-mapSize-height={2048}
-            shadow-camera-far={50}
-            shadow-camera-left={-10}
-            shadow-camera-right={10}
-            shadow-camera-top={10}
-            shadow-camera-bottom={-10}
-          />
-          
-          {/* Fill light for better illumination */}
-          <directionalLight
-            position={[-2, 2, 2]}
-            intensity={lighting.directionalIntensity * 0.3}
-            color="#ffffff"
-          />
-          
-          {/* Environment and controls */}
-          <Environment preset="studio" background={false} environmentIntensity={lighting.environmentIntensity} />
-          <OrbitControls
-            enablePan={true}
-            enableZoom={true}
-            enableRotate={true}
-            minDistance={1.5}
-            maxDistance={8}
-            maxPolarAngle={Math.PI / 1.8}
-            dampingFactor={0.05}
-            enableDamping={true}
-          />
-          
-          {/* Avatar - Use custom GLB model if available, otherwise use improved avatar */}
-          <Suspense fallback={null}>
+        <Suspense fallback={<Avatar2DFallback settings={settings} />}>
+          <Canvas
+            shadows
+            camera={{ position: [0, 1.5, 3], fov: 50 }}
+            className="bg-gradient-to-b from-slate-800 to-slate-900"
+            onCreated={({ gl }) => {
+              try {
+                gl.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+                gl.shadowMap.enabled = true
+                gl.shadowMap.type = THREE.PCFSoftShadowMap
+                
+                // Add context lost handler
+                gl.domElement.addEventListener('webglcontextlost', (event) => {
+                  event.preventDefault()
+                  setContextLost(true)
+                })
+              } catch (error) {
+                handleCanvasError(error)
+              }
+            }}
+            onError={handleCanvasError}
+            gl={{ 
+              antialias: true,
+              alpha: true,
+              preserveDrawingBuffer: false,
+              powerPreference: "default"
+            }}
+          >
+            {/* Enhanced lighting setup */}
+            <ambientLight intensity={lighting.ambientIntensity} />
+            <directionalLight
+              position={lighting.directionalPosition}
+              intensity={lighting.directionalIntensity}
+              castShadow={lighting.shadows}
+              shadow-mapSize-width={1024}
+              shadow-mapSize-height={1024}
+              shadow-camera-far={50}
+              shadow-camera-left={-10}
+              shadow-camera-right={10}
+              shadow-camera-top={10}
+              shadow-camera-bottom={-10}
+            />
+            
+            {/* Fill light for better illumination */}
+            <directionalLight
+              position={[-2, 2, 2]}
+              intensity={lighting.directionalIntensity * 0.3}
+              color="#ffffff"
+            />
+            
+            {/* Environment and controls */}
+            <Environment preset="studio" background={false} environmentIntensity={lighting.environmentIntensity} />
+            <OrbitControls
+              enablePan={true}
+              enableZoom={true}
+              enableRotate={true}
+              minDistance={1.5}
+              maxDistance={8}
+              maxPolarAngle={Math.PI / 1.8}
+              dampingFactor={0.05}
+              enableDamping={true}
+            />
+            
+            {/* Avatar - Use custom GLB model if available, otherwise use improved avatar */}
             {customModelUrl ? (
               <CustomGLBModel url={customModelUrl} settings={settings} />
             ) : (
               <RealisticAvatarMesh settings={settings} lighting={lighting} />
             )}
-          </Suspense>
-          
-          {/* Enhanced ground shadow */}
-          <ContactShadows
-            position={[0, -0.5, 0]}
-            opacity={0.4}
-            scale={6}
-            blur={2.5}
-            far={3}
-            color="#000000"
-          />
-          
-          {/* Grid floor with better material */}
-          <mesh position={[0, -0.5, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-            <planeGeometry args={[12, 12]} />
-            <meshStandardMaterial 
-              color="#1e293b" 
-              transparent 
-              opacity={0.2}
-              roughness={0.8}
-              metalness={0.1}
+            
+            {/* Enhanced ground shadow */}
+            <ContactShadows
+              position={[0, -0.5, 0]}
+              opacity={0.4}
+              scale={6}
+              blur={2.5}
+              far={3}
+              color="#000000"
             />
-          </mesh>
-        </Canvas>
+            
+            {/* Grid floor with better material */}
+            <mesh position={[0, -0.5, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+              <planeGeometry args={[12, 12]} />
+              <meshStandardMaterial 
+                color="#1e293b" 
+                transparent 
+                opacity={0.2}
+                roughness={0.8}
+                metalness={0.1}
+              />
+            </mesh>
+          </Canvas>
+        </Suspense>
       </Avatar3DErrorBoundary>
     </div>
   )
